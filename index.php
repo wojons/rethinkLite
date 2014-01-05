@@ -21,8 +21,6 @@
             
             return array($this->error_list[$num], get_class($this), $num);
         }
-        
-        public function is_callback(
     }
     
     function is_assoc($array) {
@@ -72,6 +70,8 @@
         protected $table_name;
         protected $docs;
         protected $query = null;
+        protected $limit = "";
+        protected $offset  = "";
 
         function __construct($database=null) {
             parent::__construct();
@@ -134,11 +134,27 @@
         
         function run() {
             if($this->query == null) {
-                $results = $this->conn->query("SELECT * FROM table_data;");
+                $results = $this->conn->query("SELECT * FROM table_data ".$this->limit." ".$this->offset.";");
             } else {
                 $results = array();
             }
             return (new results($results, array('conn' => $this->conn)));
+        }
+        
+        function limit($limit) {
+            if(is_numeric($limit)) {
+                $this->limit = "LIMIT ".(int)$limit;
+            }
+            
+            return $this;
+        }
+        
+        function skip($skip) {
+            if(is_numeric($skip)) {
+                $this->skip = "OFFSET ".(int)$skip;
+            }
+            
+            return $this;
         }
         
         function table($name) {
@@ -221,17 +237,31 @@
             return $this;
         }
         
+        function map($func, $opt) {
+            if(is_closure($func)) {
+                foreach($this->docs as $dex=>$dat) {
+                    $this->docs[$dex] = new document(array('uid' => $this->uid, 'doc' => $func($dat)));
+                }
+            }
+            return $this;
+        }
+        
         function filter($func) {
             foreach($this->docs as $dex=>$dat) {
                 $result = $func($dat);
                 if($result == FALSE) {
+                    $fixKeys = True;
                     unset($this->docs[$dex]);
                 }
                 elseif(is_object($result) && get_class($result) == 'document') {
                     $this->docs[$dex] = $result;
                 }
             }
-            $this->fix_keys();
+            
+            if($fixKeys == True) {
+                $this->fix_keys();
+            }
+            
             return $this;
         }
         
@@ -241,11 +271,27 @@
                     foreach($keys as $key) {
                         $new_doc[$key] = $doc($key)->toNative();
                     }
-                    return new document(array('uid'=> $doc('_id')->toNative(), 'doc' => $new_doc));
+                    return new document(array('doc' => $new_doc));
                 };
             }
             
             return $this->filter($func);
+        }
+        
+        function without($keys) {
+            if(is_array($keys) && !empty($keys)) {
+                $func = function ($doc) use $keys) {
+                    $new_doc = $doc;
+                    
+                    foreach($keys as $key) {
+                        unset($new_doc[$key]);
+                    }
+                    
+                    return new document(array('doc' => $new_doc));
+                }
+            }
+            
+            return $this->filter($func)
         }
         
         function update($change, $opt=null) {
@@ -256,13 +302,31 @@
                 } else {
                     $jsonDat = array_merge($dat->doc, $change);
                 }
-                unset($jsonDat['_id']);
+                
+                if(isset($josnDat['_id'])) { unset($jsonDat['_id']); }
                 $this->updateDocByUid($dat->uid, $jsonDat); 
             }
         }
         
-        function replace() {
+        function replace($change) {
+            foreach($this->docs as $dat) {
+                if(is_closure($change)) {
+                    $jsonDat = $change($dat->doc);
+                } else {
+                    $jsonDat = $change;
+                }
+                
+                if(isset($josnDat['_id'])) { unset($jsonDat['_id']); }
+                $this->updateDocByUid($dat->uid, $jsonDat);
+            }
+        }
+        
+        function count($filter=null, $opt=null) {
+            if(isset($filter)) {
+                $this->filter($filter);
+            }
             
+            return count($this->docs, (isset($opt['recursive']) && $opt['recursive'] == True) ? COUNT_RECURSIVE : COUNT_NORMAL);
         }
         
         private function updateDocByUid($uid, $doc) {
@@ -344,19 +408,55 @@
             return $this->field($field);
         }
         
-        /*function map($cb) {
-            return new document(array('doc' => ($this->doc/$num)));
+        function keys() {
+            return new document(array('doc' => array_keys($this->doc)));
         }
         
-        function add($val) {
-            if(is_numeric($val) && !is_string($val)) {
-                return new document(array('doc' => ($this->doc+$val)));
+        function changeAt($pos, $val) {
+            $this->doc[$pos] = $val;
+            return new document(array('doc' => $this->doc));
+        }
+        
+        function insertAt($pos, $val) {
+            if(isset($this->doc[$pos])) {
+                return $this->changeAt($pos, $val);
+            }
+        }
+        
+        function deleteAt($pos) {
+            unset($this->doc[$pos]);
+            return new document(array('doc' => $this->doc))
+        }
+        
+        function hasFields($fields) {
+            if(!is_array($fields)) {
+                $fields = array($fields);
             }
             
-            if(is_array($val)) {
-                
+            $match = 0;
+            foreach($fields as $dat) {
+                if(isset($this->doc[$dat])) {
+                    $match += 1;
+                }
             }
-        }*/
+            
+            if($match == count($fields)) {
+                return True;
+            }
+            return False;
+        }
+        
+        function add($num) {
+            return new document(array('doc' => ($this->doc+$num)));
+        }
+        
+        function sub($num) {
+            return new document(array('doc' => ($this->doc-$num)));
+        }
+        
+        function mul($num) {
+            return new document(array('doc' => ($this->doc*$num)));
+        }
         
         function div($num) {
             return new document(array('doc' => ($this->doc/$num)));
@@ -377,6 +477,30 @@
                 return True;
             } else { return False; }
         }
+        
+        function ge($val) {
+            if($this->doc >= $val) {
+                return True;
+            } else { return False; }
+        }
+        
+        function gt($val) {
+            if($this->doc > $val) {
+                return True;
+            } else { return False; }
+        }
+        
+        function lt($val) {
+            if($this->doc < $val) {
+                return True;
+            } else { return False; }
+        }
+        
+        function le($val) {
+            if($this->doc <= $val) {
+                return True;
+            } else { return False; }
+        }
     }
 
 //$d = (new rethinkLite())->createDatabase('testing'); 
@@ -389,5 +513,5 @@ $f = (new rethinkLite('testing'))->table("table1")->run()->filter(function($doc)
         return True;
     }
     return False;
-})->pluck(array('REQUEST_TIME'))->export();
+})->pluck(array('REQUEST_TIME'))->count();
 print_r($f);
